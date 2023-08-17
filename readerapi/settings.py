@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 
 from pathlib import Path
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -92,15 +93,12 @@ WSGI_APPLICATION = 'readerapi.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'railway',
-        'USER': 'postgres',
-        'PASSWORD': 'F0FvPjyFqGFoqH1FhErl',
-        'HOST': 'containers-us-west-138.railway.app',
-        'PORT': '5647',
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
+DATABASES["default"] = dj_database_url.parse("postgres://default:hjntH4o1sKgO@ep-black-dawn-00169375.us-east-1.postgres.vercel-storage.com:5432/verceldb")
 
 # Password validation
 # https://docs.djangoproject.com/en/4.1/ref/settings/#auth-password-validators
