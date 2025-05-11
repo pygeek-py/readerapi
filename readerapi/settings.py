@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-*=5lf%zr@z^(i)t7j5sw#hvnph*a21bn!yni^a6m3g6*qg7@16
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['readerapi.onrender.com']
 
 
 # Application definition
