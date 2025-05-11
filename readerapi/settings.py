@@ -98,7 +98,7 @@ DATABASES = {
     }
 }
 
-DATABASES["default"] = dj_database_url.parse("postgres://default:hjntH4o1sKgO@ep-black-dawn-00169375.us-east-1.postgres.vercel-storage.com:5432/verceldb")
+DATABASES["default"] = dj_database_url.parse("postgres://neondb_owner:npg_bNwT2FXxPo6G@ep-wild-pond-a5e96hve-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require")
 
 # Password validation
 # https://docs.djangoproject.com/en/4.1/ref/settings/#auth-password-validators
