@@ -1,164 +1,206 @@
-from django.shortcuts import render, redirect
-from django.http import JsonResponse
-from django.contrib.auth import authenticate, login, logout
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework.authentication import get_authorization_header
-from django.http import HttpResponseRedirect
-from django.urls import reverse
-from rest_framework.views import APIView
-from rest_framework.exceptions import AuthenticationFailed
+from django.contrib.auth import authenticate, login
+from django.contrib.auth import logout as django_logout
 from django.contrib.auth.models import User
-import datetime, jwt
-from rest_framework.authtoken.models import Token
-from rest_framework import viewsets, filters, generics, permissions
-from rest_framework.parsers import MultiPartParser, FormParser
-from .serializers import userserializer, bookserializer, borrowserializer
-from .models import books, borrow
-from rest_framework.generics import ListAPIView
-from rest_framework.filters import SearchFilter, OrderingFilter
-from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Count
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
-# Create your views here.
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.authtoken.models import Token
+from rest_framework.generics import ListAPIView
+from rest_framework.filters import SearchFilter
+
+from .serializers import UserSerializer, BookSerializer, BorrowSerializer, AuthorSerializer, AuthorDetailSerializer
+from .models import books, borrow
+
+
 @api_view(['POST'])
 def signup(request):
-    serializer = userserializer(data=request.data)
-    if serializer.is_valid(raise_exception=True):
+    serializer = UserSerializer(data=request.data)
+    if serializer.is_valid():
         serializer.save()
-    return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['POST'])
 def signin(request):
-    username = request.data['username']
-    password = request.data['password']
+    username = request.data.get('username')
+    password = request.data.get('password')
 
-    print(username)
-    print(password)
+    if not username or not password:
+        return Response(
+            {'detail': 'Username and password are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     user = authenticate(request, username=username, password=password)
-
-    if user is not None:
-        login(request, user)
-        serializer = userserializer(user)
-
-    #user = User.objects.filter(username=username).first()
-
     if user is None:
-        raise AuthenticationFailed('User not found')
-    if not user.check_password(password):
-        raise AuthenticationFailed('Incorrect password')
+        # Deliberately generic: don't reveal whether the username exists.
+        raise AuthenticationFailed('Invalid username or password.')
 
-    payload = {
+    login(request, user)
+    token, _ = Token.objects.get_or_create(user=user)
+
+    return Response({
+        'token': token.key,
         'id': user.id,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=60),
-        'iat': datetime.datetime.utcnow()
-    }
+        'username': user.username,
+    })
 
-    token = jwt.encode(payload, 'secret', algorithm='HS256')
 
-    response = Response()
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    Token.objects.filter(user=request.user).delete()
+    django_logout(request)
+    return Response({'message': 'Logged out successfully.'})
 
-    response.set_cookie(key='jwt', value=token, httponly=True)
-    response.data = {
-        'jwt': token,
-        'id': user.id,
-        'username': user.username
-        }
 
-    return response
+BOOKS_PAGE_SIZE = 5
 
-@api_view(['GET'])
-def logout(request):
-	logout(request)
-	response = Response()
-	response.data = {
-		'message': 'success'
-	}
-	return response
 
 @api_view(['GET'])
 def getbook(request):
     alls = books.objects.all().order_by('-id')
-    serializer = bookserializer(alls, many=True)
-    return Response(serializer.data)
+    paginator = Paginator(alls, BOOKS_PAGE_SIZE)
+
+    try:
+        page_obj = paginator.page(request.query_params.get('page', 1))
+    except (PageNotAnInteger, ValueError):
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+
+    serializer = BookSerializer(page_obj.object_list, many=True)
+    return Response({
+        'results': serializer.data,
+        'page': page_obj.number,
+        'num_pages': paginator.num_pages,
+        'count': paginator.count,
+    })
+
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def borrows(request):
-    serializer = borrowserializer(data=request.data)
+    serializer = BorrowSerializer(data=request.data)
     if serializer.is_valid():
-        serializer.save()
-    return Response(serializer.data)
+        serializer.save(user=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['GET'])
 def eachbook(request, pk):
-    book = books.objects.get(num=pk)
-    serializer = bookserializer(book, many=False)
+    try:
+        book = books.objects.get(num=pk)
+    except books.DoesNotExist:
+        return Response({'detail': 'Book not found.'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = BookSerializer(book, many=False)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def eachbobook(request, pk):
     book = borrow.objects.filter(num=pk)
-    serializer = borrowserializer(book, many=True)
+    serializer = BorrowSerializer(book, many=True)
     return Response(serializer.data)
 
+
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def userbo(request, pk):
-    use = User.objects.get(id=pk)
-    book = borrow.objects.filter(user=use)
-    serializer = borrowserializer(book, many=True)
+    if str(request.user.id) != str(pk):
+        return Response(
+            {'detail': 'You do not have permission to view this user\'s borrowed books.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    book = borrow.objects.filter(user_id=pk)
+    serializer = BorrowSerializer(book, many=True)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def gens(request):
     alls = books.objects.filter(genre="Fiction")
-    serializer = bookserializer(alls, many=True)
+    serializer = BookSerializer(alls, many=True)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def gensr(request):
     alls = books.objects.filter(genre="Romance")
-    serializer = bookserializer(alls, many=True)
+    serializer = BookSerializer(alls, many=True)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def author(request):
-    users = User.objects.all()
-    serializer = userserializer(users, many=True)
+    """Authors are derived from the library: only users with at least one book appear here."""
+    users = (
+        User.objects.filter(books__isnull=False)
+        .annotate(book_count=Count('books'))
+        .distinct()
+        .order_by('username')
+    )
+    serializer = AuthorSerializer(users, many=True)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def autbook(request, pk):
-    uses = User.objects.get(id=pk)
-    use = books.objects.filter(user=uses)
-    serializer = bookserializer(use, many=True)
+    """Author details plus every book they've authored, in a single response."""
+    try:
+        author_user = User.objects.get(pk=pk)
+    except User.DoesNotExist:
+        return Response({'detail': 'Author not found.'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = AuthorDetailSerializer(author_user)
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 def userb(request, pk):
-    use = User.objects.get(id=pk)
-    serializer = userserializer(use, many=False)
+    try:
+        use = User.objects.get(id=pk)
+    except User.DoesNotExist:
+        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = UserSerializer(use, many=False)
     return Response(serializer.data)
+
 
 class EventListView(ListAPIView):
     queryset = books.objects.all()
-    serializer_class = bookserializer
-    filter_backends = [filters.SearchFilter]
+    serializer_class = BookSerializer
+    filter_backends = [SearchFilter]
     search_fields = ['^title']
-    
+
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def bookp(request):
     title = request.data.get('title', '')
     genre = request.data.get('genre', '')
     description = request.data.get('description', '')
     num = request.data.get('num', '')
-    user = request.data.get('user', '')
     name = request.data.get('name', '')
 
-    use = User.objects.get(username=user)
+    if not title or not num:
+        return Response(
+            {'detail': 'title and num are required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    eve = books(user=use, title=title, genre=genre, description=description, num=num, name=name)
-
-    eve.save()
-
-    return Response({'message': 'Upload Successfully'})
+    book = books.objects.create(
+        user=request.user,
+        title=title,
+        genre=genre,
+        description=description,
+        num=num,
+        name=name,
+    )
+    serializer = BookSerializer(book)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
