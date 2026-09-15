@@ -168,3 +168,24 @@ CORS_ALLOW_HEADERS = [
     'Authorization',
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# Email (verification + password reset)
+# Defaults to printing emails to the console so verification/reset links are
+# visible during local development without any real mail credentials.
+# Set these env vars in production to send through a real SMTP provider
+# (Gmail SMTP, SendGrid, Mailgun, Mailchimp Transactional/Mandrill, etc.).
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+# TLS (port 587) and SSL (port 465) are mutually exclusive; some networks
+# block 587 outbound, so SSL needs to be selectable via env var too.
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+if EMAIL_USE_SSL:
+    EMAIL_USE_TLS = False
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Reader <no-reply@reader.app>')
+
+# Base URL of the deployed frontend, used to build links inside emails.
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')

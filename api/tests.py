@@ -1,9 +1,16 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.core import mail
+from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APITestCase
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 
-from .models import books, borrow
+from .models import books, borrow, EmailVerificationToken
 
 
 class SignupTests(APITestCase):
@@ -18,6 +25,20 @@ class SignupTests(APITestCase):
         self.assertNotEqual(user.password, 'strongpass123')
         self.assertTrue(user.check_password('strongpass123'))
         self.assertNotIn('password', response.data)
+        self.assertFalse(user.is_active, 'new accounts should be inactive until verified')
+        self.assertTrue(EmailVerificationToken.objects.filter(user=user).exists())
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(str(user.verification_token.token), mail.outbox[0].alternatives[0][0])
+
+    def test_duplicate_email_rejected(self):
+        User.objects.create_user(username='someone', email='taken@example.com', password='pass12345')
+        response = self.client.post('/signup/', {
+            'username': 'newperson',
+            'email': 'taken@example.com',
+            'password': 'pass12345',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', response.data)
 
     def test_duplicate_username_rejected(self):
         User.objects.create_user(username='bob', password='pass12345')
@@ -57,6 +78,108 @@ class SigninTests(APITestCase):
         response = self.client.post('/signin/', {'username': 'dave'})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_unverified_account_blocked_with_specific_message(self):
+        unverified = User.objects.create_user(username='frank', password='pass12345', is_active=False)
+        response = self.client.post('/signin/', {'username': 'frank', 'password': 'pass12345'})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'unverified')
+        self.assertFalse(Token.objects.filter(user=unverified).exists())
+
+
+class EmailVerificationTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='grace', email='grace@example.com', password='pass12345', is_active=False)
+        self.verification = EmailVerificationToken.objects.create(user=self.user)
+
+    def test_valid_token_activates_account(self):
+        response = self.client.post(f'/verify-email/{self.verification.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)
+
+    def test_already_verified_token_is_idempotent(self):
+        self.client.post(f'/verify-email/{self.verification.token}/')
+        response = self.client.post(f'/verify-email/{self.verification.token}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['code'], 'already_verified')
+
+    def test_expired_token_rejected(self):
+        self.verification.created_at = timezone.now() - timedelta(hours=49)
+        self.verification.save(update_fields=['created_at'])
+        response = self.client.post(f'/verify-email/{self.verification.token}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 'expired')
+        self.assertEqual(response.data['username'], 'grace')
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_active)
+
+    def test_garbage_token_rejected(self):
+        response = self.client.post('/verify-email/not-a-real-token/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 'invalid')
+
+    def test_resend_issues_new_token_and_email(self):
+        old_token = self.verification.token
+        response = self.client.post('/resend-verification/', {'email': 'grace@example.com'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.verification.refresh_from_db()
+        self.assertNotEqual(self.verification.token, old_token)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_resend_accepts_username_too(self):
+        old_token = self.verification.token
+        response = self.client.post('/resend-verification/', {'username': 'grace'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.verification.refresh_from_db()
+        self.assertNotEqual(self.verification.token, old_token)
+
+    def test_resend_for_unknown_email_is_silent(self):
+        response = self.client.post('/resend-verification/', {'email': 'nobody@example.com'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class PasswordResetTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='henry', email='henry@example.com', password='oldpass123')
+
+    def test_request_sends_email_for_known_address(self):
+        response = self.client.post('/password-reset/', {'email': 'henry@example.com'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_request_is_silent_for_unknown_address(self):
+        response = self.client.post('/password-reset/', {'email': 'ghost@example.com'})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_confirm_with_valid_token_changes_password(self):
+        uidb64 = urlsafe_base64_encode(force_bytes(self.user.pk))
+        reset_token = default_token_generator.make_token(self.user)
+        response = self.client.post('/password-reset-confirm/', {
+            'uid': uidb64, 'token': reset_token, 'password': 'brandnewpass123',
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('brandnewpass123'))
+
+    def test_confirm_with_invalid_token_rejected(self):
+        uidb64 = urlsafe_base64_encode(force_bytes(self.user.pk))
+        response = self.client.post('/password-reset-confirm/', {
+            'uid': uidb64, 'token': 'bogus-token', 'password': 'brandnewpass123',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('oldpass123'))
+
+    def test_confirm_with_short_password_rejected(self):
+        uidb64 = urlsafe_base64_encode(force_bytes(self.user.pk))
+        reset_token = default_token_generator.make_token(self.user)
+        response = self.client.post('/password-reset-confirm/', {
+            'uid': uidb64, 'token': reset_token, 'password': 'short',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
 
 class LogoutTests(APITestCase):
     def setUp(self):
@@ -90,6 +213,11 @@ class BorrowAuthorizationTests(APITestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_book_detail_exposes_author_id_without_pii(self):
+        response = self.client.get('/each/1/')
+        self.assertEqual(response.data['author_id'], self.owner.id)
+        self.assertNotIn('user', response.data)
+
     def test_borrow_ignores_client_supplied_user_and_uses_request_user(self):
         other_user = User.objects.create_user(username='mallory', password='pass12345')
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
@@ -115,8 +243,18 @@ class BookPostAuthorizationTests(APITestCase):
         response = self.client.post('/bookp/', {'title': 'New Book', 'num': 99})
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_bookp_attributes_book_to_request_user(self):
+    def test_bookp_requires_admin(self):
         user = User.objects.create_user(username='grace', password='pass12345')
+        token = Token.objects.create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        response = self.client.post('/bookp/', {
+            'title': 'New Book', 'genre': 'Fiction', 'description': 'desc', 'num': 99, 'name': 'Grace',
+        })
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(books.objects.filter(num=99).exists())
+
+    def test_bookp_attributes_book_to_request_user(self):
+        user = User.objects.create_user(username='grace', password='pass12345', is_staff=True)
         token = Token.objects.create(user=user)
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
         response = self.client.post('/bookp/', {
@@ -125,6 +263,25 @@ class BookPostAuthorizationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = books.objects.get(num=99)
         self.assertEqual(created.user, user)
+
+
+class GenreFilterTests(APITestCase):
+    def setUp(self):
+        owner = User.objects.create_user(username='cataloger', password='pass12345')
+        books.objects.create(user=owner, title='F1', description='d', genre='Fantasy', name='A', num=901)
+        books.objects.create(user=owner, title='F2', description='d', genre='Fantasy', name='A', num=902)
+        books.objects.create(user=owner, title='G1', description='d', genre='Gothic', name='A', num=903)
+
+    def test_genre_query_param_filters_case_insensitively(self):
+        response = self.client.get('/?genre=fantasy')
+        titles = {b['title'] for b in response.data['results']}
+        self.assertEqual(titles, {'F1', 'F2'})
+
+    def test_genres_list_returns_counts(self):
+        response = self.client.get('/genres/')
+        by_genre = {row['genre']: row['book_count'] for row in response.data}
+        self.assertEqual(by_genre['Fantasy'], 2)
+        self.assertEqual(by_genre['Gothic'], 1)
 
 
 class BookListPaginationTests(APITestCase):

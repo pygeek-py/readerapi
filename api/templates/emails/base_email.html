@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Reader{% endblock %}</title>
+</head>
+<body style="margin:0; padding:0; background-color:#F3EFE7; font-family: Georgia, 'Times New Roman', serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3EFE7; padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF; border-radius:12px; overflow:hidden; border:1px solid #E7E2D8;">
+          <tr>
+            <td style="background-color:#16342B; padding:28px 32px;">
+              <span style="font-family: Georgia, serif; font-size:22px; color:#F3EFE7; letter-spacing:0.02em;">Reader</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 32px; font-family: -apple-system, Helvetica, Arial, sans-serif; color:#26302B;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px; background-color:#FAF7F2; border-top:1px solid #E7E2D8; font-family: -apple-system, Helvetica, Arial, sans-serif; font-size:12px; color:#8A9089;">
+              You're receiving this because this address was used on Reader. If this wasn't you, you can safely ignore this email.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

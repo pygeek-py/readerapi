@@ -9,6 +9,7 @@ urlpatterns = [
     path('userb/<str:pk>/', views.userb, name="userb"),
     path('gens/', views.gens, name="gens"),
     path('gensr/', views.gensr, name="gensr"),
+    path('genres/', views.genres_list, name="genres-list"),
     path('each/<str:pk>/', views.eachbook, name="each"),
     path('eachborrow/<str:pk>/', views.eachbobook, name="eachborrow"),
     path('author/', views.author, name="author"),
@@ -19,4 +20,8 @@ urlpatterns = [
     path('signup/', views.signup, name="signup"),
     path('signin/', views.signin, name="signin"),
     path('logout/', views.logout_view, name="logout"),
+    path('verify-email/<str:token>/', views.verify_email, name="verify-email"),
+    path('resend-verification/', views.resend_verification, name="resend-verification"),
+    path('password-reset/', views.password_reset_request, name="password-reset"),
+    path('password-reset-confirm/', views.password_reset_confirm, name="password-reset-confirm"),
 ]
