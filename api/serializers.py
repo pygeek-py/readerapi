@@ -22,9 +22,6 @@ class UserSerializer(serializers.ModelSerializer):
         instance = self.Meta.model(**validated_data)
         if password is not None:
             instance.set_password(password)
-        # Accounts stay inactive (and therefore unable to authenticate) until
-        # the verification link is clicked.
-        instance.is_active = False
         instance.save()
         return instance
 

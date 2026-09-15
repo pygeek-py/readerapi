@@ -4,10 +4,8 @@ from django.contrib.auth import authenticate, login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
@@ -20,12 +18,12 @@ from rest_framework.authtoken.models import Token
 from rest_framework.generics import ListAPIView
 from rest_framework.filters import SearchFilter
 
-from .emails import send_verification_email, send_password_reset_email
-from .models import EmailVerificationToken, books, borrow
+from .emails import send_password_reset_email
+from .models import books, borrow
 from .serializers import UserSerializer, BookSerializer, BorrowSerializer, AuthorSerializer, AuthorDetailSerializer
 
-# Generic responses for anything that could otherwise reveal whether an
-# email/account exists (resend verification, forgot password).
+# Generic response for anything that could otherwise reveal whether an
+# email/account exists (forgot password).
 GENERIC_EMAIL_RESPONSE = {
     'detail': "If an account matches that email, we've sent you a link.",
 }
@@ -52,10 +50,15 @@ def signup(request):
     serializer = UserSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
-        verification = EmailVerificationToken.objects.create(user=user)
-        _send_email_safely(send_verification_email, user, verification.token)
+        token, _ = Token.objects.get_or_create(user=user)
         return Response(
-            {'detail': 'Account created. Check your email to verify your address before signing in.'},
+            {
+                'detail': 'Account created.',
+                'token': token.key,
+                'id': user.id,
+                'username': user.username,
+                'is_admin': user.is_staff,
+            },
             status=status.HTTP_201_CREATED,
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -70,17 +73,6 @@ def signin(request):
         return Response(
             {'detail': 'Username and password are required.'},
             status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        candidate = User.objects.get(username=username)
-    except User.DoesNotExist:
-        candidate = None
-
-    if candidate is not None and candidate.check_password(password) and not candidate.is_active:
-        return Response(
-            {'detail': 'Please verify your email before signing in.', 'code': 'unverified'},
-            status=status.HTTP_403_FORBIDDEN,
         )
 
     user = authenticate(request, username=username, password=password)
@@ -105,51 +97,6 @@ def logout_view(request):
     Token.objects.filter(user=request.user).delete()
     django_logout(request)
     return Response({'message': 'Logged out successfully.'})
-
-
-@api_view(['POST'])
-def verify_email(request, token):
-    try:
-        verification = EmailVerificationToken.objects.get(token=token)
-    except (EmailVerificationToken.DoesNotExist, ValueError, DjangoValidationError):
-        return Response({'detail': 'This verification link is invalid.', 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if verification.verified_at is not None:
-        return Response({'detail': 'This email is already verified. You can sign in.', 'code': 'already_verified'})
-
-    if verification.is_expired():
-        return Response({
-            'detail': 'This verification link has expired.',
-            'code': 'expired',
-            'username': verification.user.username,
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    verification.verified_at = timezone.now()
-    verification.save(update_fields=['verified_at'])
-
-    user = verification.user
-    user.is_active = True
-    user.save(update_fields=['is_active'])
-
-    return Response({'detail': 'Your email is verified. You can sign in now.'})
-
-
-@api_view(['POST'])
-def resend_verification(request):
-    email = request.data.get('email', '')
-    username = request.data.get('username', '')
-    user = None
-    if email:
-        user = User.objects.filter(email__iexact=email).first()
-    elif username:
-        user = User.objects.filter(username=username).first()
-
-    if user is not None and not user.is_active:
-        verification, _ = EmailVerificationToken.objects.get_or_create(user=user)
-        verification.reset()
-        _send_email_safely(send_verification_email, user, verification.token)
-
-    return Response(GENERIC_EMAIL_RESPONSE)
 
 
 @api_view(['POST'])

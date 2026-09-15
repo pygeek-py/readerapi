@@ -17,16 +17,6 @@ def _send(subject, template_name, context, to_email):
     message.send(fail_silently=False)
 
 
-def send_verification_email(user, token):
-    verify_url = f"{settings.FRONTEND_URL}/verify-email/{token}"
-    _send(
-        subject='Confirm your Reader account',
-        template_name='emails/verify_email.html',
-        context={'username': user.username, 'verify_url': verify_url},
-        to_email=user.email,
-    )
-
-
 def send_password_reset_email(user, uidb64, token):
     reset_url = f"{settings.FRONTEND_URL}/reset-password/{uidb64}/{token}"
     _send(

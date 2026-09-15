@@ -169,9 +169,9 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# Email (verification + password reset)
-# Defaults to printing emails to the console so verification/reset links are
-# visible during local development without any real mail credentials.
+# Email (password reset)
+# Defaults to printing emails to the console so reset links are visible
+# during local development without any real mail credentials.
 # Set these env vars in production to send through a real SMTP provider
 # (Gmail SMTP, SendGrid, Mailgun, Mailchimp Transactional/Mandrill, etc.).
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')

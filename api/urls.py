@@ -20,8 +20,6 @@ urlpatterns = [
     path('signup/', views.signup, name="signup"),
     path('signin/', views.signin, name="signin"),
     path('logout/', views.logout_view, name="logout"),
-    path('verify-email/<str:token>/', views.verify_email, name="verify-email"),
-    path('resend-verification/', views.resend_verification, name="resend-verification"),
     path('password-reset/', views.password_reset_request, name="password-reset"),
     path('password-reset-confirm/', views.password_reset_confirm, name="password-reset-confirm"),
 ]

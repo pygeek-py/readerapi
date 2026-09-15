@@ -1,16 +1,13 @@
-from datetime import timedelta
-
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
-from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APITestCase
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 
-from .models import books, borrow, EmailVerificationToken
+from .models import books, borrow
 
 
 class SignupTests(APITestCase):
@@ -25,10 +22,9 @@ class SignupTests(APITestCase):
         self.assertNotEqual(user.password, 'strongpass123')
         self.assertTrue(user.check_password('strongpass123'))
         self.assertNotIn('password', response.data)
-        self.assertFalse(user.is_active, 'new accounts should be inactive until verified')
-        self.assertTrue(EmailVerificationToken.objects.filter(user=user).exists())
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn(str(user.verification_token.token), mail.outbox[0].alternatives[0][0])
+        self.assertTrue(user.is_active, 'accounts are active immediately; there is no email verification step')
+        self.assertIn('token', response.data)
+        self.assertTrue(Token.objects.filter(user=user, key=response.data['token']).exists())
 
     def test_duplicate_email_rejected(self):
         User.objects.create_user(username='someone', email='taken@example.com', password='pass12345')
@@ -77,66 +73,6 @@ class SigninTests(APITestCase):
     def test_missing_credentials_rejected(self):
         response = self.client.post('/signin/', {'username': 'dave'})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_unverified_account_blocked_with_specific_message(self):
-        unverified = User.objects.create_user(username='frank', password='pass12345', is_active=False)
-        response = self.client.post('/signin/', {'username': 'frank', 'password': 'pass12345'})
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(response.data['code'], 'unverified')
-        self.assertFalse(Token.objects.filter(user=unverified).exists())
-
-
-class EmailVerificationTests(APITestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(username='grace', email='grace@example.com', password='pass12345', is_active=False)
-        self.verification = EmailVerificationToken.objects.create(user=self.user)
-
-    def test_valid_token_activates_account(self):
-        response = self.client.post(f'/verify-email/{self.verification.token}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.is_active)
-
-    def test_already_verified_token_is_idempotent(self):
-        self.client.post(f'/verify-email/{self.verification.token}/')
-        response = self.client.post(f'/verify-email/{self.verification.token}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['code'], 'already_verified')
-
-    def test_expired_token_rejected(self):
-        self.verification.created_at = timezone.now() - timedelta(hours=49)
-        self.verification.save(update_fields=['created_at'])
-        response = self.client.post(f'/verify-email/{self.verification.token}/')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data['code'], 'expired')
-        self.assertEqual(response.data['username'], 'grace')
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.is_active)
-
-    def test_garbage_token_rejected(self):
-        response = self.client.post('/verify-email/not-a-real-token/')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data['code'], 'invalid')
-
-    def test_resend_issues_new_token_and_email(self):
-        old_token = self.verification.token
-        response = self.client.post('/resend-verification/', {'email': 'grace@example.com'})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.verification.refresh_from_db()
-        self.assertNotEqual(self.verification.token, old_token)
-        self.assertEqual(len(mail.outbox), 1)
-
-    def test_resend_accepts_username_too(self):
-        old_token = self.verification.token
-        response = self.client.post('/resend-verification/', {'username': 'grace'})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.verification.refresh_from_db()
-        self.assertNotEqual(self.verification.token, old_token)
-
-    def test_resend_for_unknown_email_is_silent(self):
-        response = self.client.post('/resend-verification/', {'email': 'nobody@example.com'})
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(mail.outbox), 0)
 
 
 class PasswordResetTests(APITestCase):
