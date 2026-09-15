@@ -174,6 +174,34 @@ class BorrowAuthorizationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
+class BorrowLimitTests(APITestCase):
+    def setUp(self):
+        self.reader = User.objects.create_user(username='iris', password='pass12345')
+        self.token = Token.objects.create(user=self.reader)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.token.key}')
+        for i in range(5):
+            borrow.objects.create(
+                user=self.reader, title=f'Book {i}', description='d', genre='Fiction',
+                name='Author', num=i, imprint='First', due='2026-01-01',
+            )
+
+    def test_sixth_borrow_is_rejected(self):
+        response = self.client.post('/borrow/', {
+            'title': 'One More', 'description': 'd', 'genre': 'Fiction',
+            'name': 'Author', 'num': 99, 'imprint': 'First', 'due': '2026-01-01',
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(borrow.objects.filter(user=self.reader).count(), 5)
+
+    def test_borrow_allowed_after_returning_one(self):
+        borrow.objects.filter(user=self.reader).first().delete()
+        response = self.client.post('/borrow/', {
+            'title': 'One More', 'description': 'd', 'genre': 'Fiction',
+            'name': 'Author', 'num': 99, 'imprint': 'First', 'due': '2026-01-01',
+        })
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
 class BookPostAuthorizationTests(APITestCase):
     def test_bookp_requires_authentication(self):
         response = self.client.post('/bookp/', {'title': 'New Book', 'num': 99})

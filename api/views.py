@@ -167,9 +167,18 @@ def getbook(request):
     })
 
 
+MAX_ACTIVE_LOANS = 5
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def borrows(request):
+    active_loans = borrow.objects.filter(user=request.user).count()
+    if active_loans >= MAX_ACTIVE_LOANS:
+        return Response(
+            {'detail': f'You already have {MAX_ACTIVE_LOANS} books on loan. Return one before borrowing another.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     serializer = BorrowSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save(user=request.user)
