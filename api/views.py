@@ -1,3 +1,5 @@
+import logging
+
 from django.contrib.auth import authenticate, login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.models import User
@@ -28,6 +30,22 @@ GENERIC_EMAIL_RESPONSE = {
     'detail': "If an account matches that email, we've sent you a link.",
 }
 
+logger = logging.getLogger(__name__)
+
+
+def _send_email_safely(send_fn, *args):
+    """
+    Email delivery is best-effort from the caller's point of view: a
+    misconfigured or unreachable SMTP server shouldn't turn account
+    creation, resend, or password-reset requests into a 500. The action
+    that already succeeded (account created, token issued) still stands;
+    the user can always use "resend" once delivery is working.
+    """
+    try:
+        send_fn(*args)
+    except Exception:
+        logger.exception('Failed to send email via %s', send_fn.__name__)
+
 
 @api_view(['POST'])
 def signup(request):
@@ -35,7 +53,7 @@ def signup(request):
     if serializer.is_valid():
         user = serializer.save()
         verification = EmailVerificationToken.objects.create(user=user)
-        send_verification_email(user, verification.token)
+        _send_email_safely(send_verification_email, user, verification.token)
         return Response(
             {'detail': 'Account created. Check your email to verify your address before signing in.'},
             status=status.HTTP_201_CREATED,
@@ -129,7 +147,7 @@ def resend_verification(request):
     if user is not None and not user.is_active:
         verification, _ = EmailVerificationToken.objects.get_or_create(user=user)
         verification.reset()
-        send_verification_email(user, verification.token)
+        _send_email_safely(send_verification_email, user, verification.token)
 
     return Response(GENERIC_EMAIL_RESPONSE)
 
@@ -142,7 +160,7 @@ def password_reset_request(request):
     if user is not None:
         uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
         reset_token = default_token_generator.make_token(user)
-        send_password_reset_email(user, uidb64, reset_token)
+        _send_email_safely(send_password_reset_email, user, uidb64, reset_token)
 
     return Response(GENERIC_EMAIL_RESPONSE)
 

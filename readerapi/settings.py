@@ -185,6 +185,10 @@ EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 if EMAIL_USE_SSL:
     EMAIL_USE_TLS = False
+# Without this, a blocked/unreachable SMTP host hangs the request for minutes
+# (the OS-level TCP timeout) instead of failing fast; views send email via
+# _send_email_safely() so a timeout here doesn't turn into a 500 either way.
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=10, cast=int)
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Reader <no-reply@reader.app>')
 
 # Base URL of the deployed frontend, used to build links inside emails.
