@@ -3,6 +3,7 @@ from . import views
 from .views import EventListView
 
 urlpatterns = [
+    path('healthz/', views.healthz, name="healthz"),
     path('', views.getbook, name="getbook"),
     path('borrow/', views.borrows, name="borrows"),
     path('userbo/<str:pk>/', views.userbo, name="userbo"),

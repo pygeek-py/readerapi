@@ -6,6 +6,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.db.models import Count
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from django.http import JsonResponse
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
@@ -27,6 +28,11 @@ from .serializers import UserSerializer, BookSerializer, BorrowSerializer, Autho
 GENERIC_EMAIL_RESPONSE = {
     'detail': "If an account matches that email, we've sent you a link.",
 }
+
+
+def healthz(request):
+    """Plain Django view (no DRF, no DB) for uptime/keep-alive pings."""
+    return JsonResponse({'status': 'ok'})
 
 logger = logging.getLogger(__name__)
 

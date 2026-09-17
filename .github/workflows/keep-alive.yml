@@ -1,0 +1,25 @@
+name: Keep Render services warm
+
+# Quoted because an unquoted `on:` is parsed as the boolean `true` by PyYAML
+# (a common gotcha for tools that lint/parse this file with Python); GitHub's
+# own workflow parser accepts the quoted form the same as the unquoted one.
+"on":
+  schedule:
+    # Render's free tier spins a service down after ~15 minutes idle;
+    # pinging every 10 minutes keeps both services from ever reaching that.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend (readerapi)
+        run: |
+          curl -sf --max-time 25 https://readerapi.onrender.com/healthz/ \
+            || echo "Backend ping failed or timed out (likely mid cold-start) - not fatal."
+
+      - name: Ping frontend (reader)
+        run: |
+          curl -sf --max-time 25 https://reader-pjxs.onrender.com/ \
+            || echo "Frontend ping failed or timed out (likely mid cold-start) - not fatal."
