@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.conf import settings
 from django.contrib.auth.models import User
 from .models import books, borrow
 
@@ -22,6 +23,9 @@ class UserSerializer(serializers.ModelSerializer):
         instance = self.Meta.model(**validated_data)
         if password is not None:
             instance.set_password(password)
+        # When verification is required, the account stays inactive (and so
+        # can't authenticate) until the emailed link is followed.
+        instance.is_active = not settings.REQUIRE_EMAIL_VERIFICATION
         instance.save()
         return instance
 
@@ -30,10 +34,22 @@ class BookSerializer(serializers.ModelSerializer):
     # Only the id is exposed (no nested email/PII); enough for the frontend
     # to link a book to its author's page.
     author_id = serializers.PrimaryKeyRelatedField(source='user', read_only=True)
+    available_copies = serializers.SerializerMethodField()
 
     class Meta:
         model = books
-        fields = ['id', 'title', 'description', 'genre', 'name', 'num', 'author_id', 'cover_url']
+        fields = [
+            'id', 'title', 'description', 'genre', 'name', 'num', 'author_id', 'cover_url',
+            'isbn', 'publish_year', 'pages', 'copies', 'available_copies',
+        ]
+
+    def get_available_copies(self, obj):
+        # List views annotate active_loans in one query; single-object paths
+        # (e.g. nested in an author response) fall back to counting.
+        loans = getattr(obj, 'active_loans', None)
+        if loans is None:
+            loans = borrow.objects.filter(num=obj.num).count()
+        return max(obj.copies - loans, 0)
 
 
 class BorrowSerializer(serializers.ModelSerializer):
@@ -54,6 +70,10 @@ class AuthorSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'book_count', 'display_name']
 
     def get_display_name(self, obj):
+        # The author list view annotates this in one query; fall back otherwise.
+        annotated = getattr(obj, 'first_book_name', None)
+        if annotated:
+            return annotated
         first_book = obj.books_set.first()
         return first_book.name if first_book else obj.username
 

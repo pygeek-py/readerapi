@@ -169,11 +169,14 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# Email (password reset)
+# Email (account verification + password reset)
 # Defaults to printing emails to the console so reset links are visible
 # during local development without any real mail credentials.
 # Set these env vars in production to send through a real SMTP provider
 # (Gmail SMTP, SendGrid, Mailgun, Mailchimp Transactional/Mandrill, etc.).
+# On Render, where outbound SMTP is blocked, use the HTTPS Gmail API backend:
+#   EMAIL_BACKEND=api.gmail_backend.GmailAPIEmailBackend
+# plus the three GMAIL_* values below (see scripts/gmail_authorize.py).
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
 EMAIL_HOST = config('EMAIL_HOST', default='')
 EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
@@ -190,6 +193,22 @@ if EMAIL_USE_SSL:
 # _send_email_safely() so a timeout here doesn't turn into a 500 either way.
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=10, cast=int)
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='Reader <no-reply@reader.app>')
+
+# Gmail API credentials, used only by api.gmail_backend.GmailAPIEmailBackend.
+GMAIL_CLIENT_ID = config('GMAIL_CLIENT_ID', default='')
+GMAIL_CLIENT_SECRET = config('GMAIL_CLIENT_SECRET', default='')
+GMAIL_REFRESH_TOKEN = config('GMAIL_REFRESH_TOKEN', default='')
+
+# New accounts must confirm their email before they can sign in. By default
+# this is on only when a real mail backend is configured, so a deploy that has
+# no email credentials yet (or local dev printing mail to the console) doesn't
+# leave people locked out of accounts they can never verify. Override with
+# REQUIRE_EMAIL_VERIFICATION=True/False.
+REQUIRE_EMAIL_VERIFICATION = config(
+    'REQUIRE_EMAIL_VERIFICATION',
+    default=EMAIL_BACKEND != 'django.core.mail.backends.console.EmailBackend',
+    cast=bool,
+)
 
 # Base URL of the deployed frontend, used to build links inside emails.
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')

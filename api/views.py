@@ -1,30 +1,37 @@
 import logging
+from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import authenticate, login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
-from django.db.models import Count
+from django.db import transaction
+from django.db.models import Count, F, IntegerField, OuterRef, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.http import JsonResponse
+from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.authtoken.models import Token
 from rest_framework.generics import ListAPIView
 from rest_framework.filters import SearchFilter
+from rest_framework.throttling import AnonRateThrottle
 
-from .emails import send_password_reset_email
+from .emails import send_password_reset_email, send_verification_email
 from .models import books, borrow
+from .tokens import email_verification_token
 from .serializers import UserSerializer, BookSerializer, BorrowSerializer, AuthorSerializer, AuthorDetailSerializer
 
 # Generic response for anything that could otherwise reveal whether an
-# email/account exists (forgot password).
+# email/account exists (resend verification, forgot password).
 GENERIC_EMAIL_RESPONSE = {
     'detail': "If an account matches that email, we've sent you a link.",
 }
@@ -35,6 +42,12 @@ def healthz(request):
     return JsonResponse({'status': 'ok'})
 
 logger = logging.getLogger(__name__)
+
+
+class ResendVerificationThrottle(AnonRateThrottle):
+    """Stops the resend endpoint being used to spam an address."""
+    scope = 'resend_verification'
+    THROTTLE_RATES = {'resend_verification': '10/hour'}
 
 
 def _send_email_safely(send_fn, *args):
@@ -51,11 +64,25 @@ def _send_email_safely(send_fn, *args):
         logger.exception('Failed to send email via %s', send_fn.__name__)
 
 
+def _send_verification(user):
+    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+    _send_email_safely(send_verification_email, user, uidb64, email_verification_token.make_token(user))
+
+
 @api_view(['POST'])
 def signup(request):
     serializer = UserSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
+        if not user.is_active:
+            _send_verification(user)
+            return Response(
+                {
+                    'detail': 'Account created. Check your email to confirm your address before signing in.',
+                    'verification_required': True,
+                },
+                status=status.HTTP_201_CREATED,
+            )
         token, _ = Token.objects.get_or_create(user=user)
         return Response(
             {
@@ -83,6 +110,15 @@ def signin(request):
 
     user = authenticate(request, username=username, password=password)
     if user is None:
+        # Right password on an account that hasn't confirmed its email yet:
+        # say so specifically (they proved they own the account) so the
+        # frontend can offer to resend the link.
+        candidate = User.objects.filter(username=username, is_active=False).first()
+        if candidate is not None and candidate.has_usable_password() and candidate.check_password(password):
+            return Response(
+                {'detail': 'Please confirm your email before signing in.', 'code': 'unverified'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         # Deliberately generic otherwise: don't reveal whether the username exists.
         raise AuthenticationFailed('Invalid username or password.')
 
@@ -103,6 +139,47 @@ def logout_view(request):
     Token.objects.filter(user=request.user).delete()
     django_logout(request)
     return Response({'message': 'Logged out successfully.'})
+
+
+@api_view(['POST'])
+def verify_email(request):
+    uidb64 = request.data.get('uid', '')
+    verify_token = request.data.get('token', '')
+
+    try:
+        user = User.objects.get(pk=force_str(urlsafe_base64_decode(uidb64)))
+    except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+        user = None
+
+    if user is None or not email_verification_token.check_token(user, verify_token):
+        return Response(
+            {'detail': 'This confirmation link is invalid or has expired.', 'code': 'invalid'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if user.is_active:
+        return Response({'detail': 'This email is already confirmed. You can sign in.', 'code': 'already_verified'})
+
+    user.is_active = True
+    user.save(update_fields=['is_active'])
+    return Response({'detail': 'Your email is confirmed. You can sign in now.'})
+
+
+@api_view(['POST'])
+@throttle_classes([ResendVerificationThrottle])
+def resend_verification(request):
+    email = request.data.get('email', '')
+    username = request.data.get('username', '')
+    user = None
+    if email:
+        user = User.objects.filter(email__iexact=email).first()
+    elif username:
+        user = User.objects.filter(username=username).first()
+
+    if user is not None and not user.is_active and user.has_usable_password():
+        _send_verification(user)
+
+    return Response(GENERIC_EMAIL_RESPONSE)
 
 
 @api_view(['POST'])
@@ -146,15 +223,31 @@ def password_reset_confirm(request):
     return Response({'detail': 'Your password has been reset. You can sign in now.'})
 
 
-BOOKS_PAGE_SIZE = 5
+BOOKS_PAGE_SIZE = 12
+
+
+def with_active_loans(queryset):
+    """Annotate each book with how many of its copies are currently on loan (one query)."""
+    loans = (
+        borrow.objects.filter(num=OuterRef('num'))
+        .order_by()
+        .values('num')
+        .annotate(c=Count('id'))
+        .values('c')
+    )
+    return queryset.annotate(
+        active_loans=Coalesce(Subquery(loans, output_field=IntegerField()), Value(0))
+    )
 
 
 @api_view(['GET'])
 def getbook(request):
-    alls = books.objects.all().order_by('-id')
+    alls = with_active_loans(books.objects.all()).order_by('title')
     genre = request.query_params.get('genre')
     if genre:
         alls = alls.filter(genre__iexact=genre)
+    if request.query_params.get('available') in ('1', 'true'):
+        alls = alls.filter(copies__gt=F('active_loans'))
     paginator = Paginator(alls, BOOKS_PAGE_SIZE)
 
     try:
@@ -174,29 +267,81 @@ def getbook(request):
 
 
 MAX_ACTIVE_LOANS = 5
+MAX_LOAN_DAYS = 14
+
+
+def _bad_request(message):
+    return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def borrows(request):
-    active_loans = borrow.objects.filter(user=request.user).count()
-    if active_loans >= MAX_ACTIVE_LOANS:
-        return Response(
-            {'detail': f'You already have {MAX_ACTIVE_LOANS} books on loan. Return one before borrowing another.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    serializer = BorrowSerializer(data=request.data)
-    if serializer.is_valid():
+    try:
+        num = int(request.data.get('num'))
+    except (TypeError, ValueError):
+        return _bad_request('A valid catalog number is required.')
+
+    # Lock the book row so two members can't both take the last copy.
+    with transaction.atomic():
+        book = books.objects.select_for_update().filter(num=num).first()
+        if book is None:
+            return Response({'detail': 'That book is not in the catalog.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if borrow.objects.filter(user=request.user).count() >= MAX_ACTIVE_LOANS:
+            return _bad_request(
+                f'You already have {MAX_ACTIVE_LOANS} books on loan. Return one before borrowing another.'
+            )
+        if borrow.objects.filter(user=request.user, num=num).exists():
+            return _bad_request('You already have this book on loan.')
+        if borrow.objects.filter(num=num).count() >= book.copies:
+            return _bad_request('All copies of this book are currently on loan.')
+
+        # Title, author, cover etc. always come from the catalog record, never the client.
+        serializer = BorrowSerializer(data={
+            'title': book.title,
+            'description': book.description,
+            'genre': book.genre,
+            'name': book.name,
+            'num': book.num,
+            'cover_url': book.cover_url,
+            'imprint': request.data.get('imprint'),
+            'due': request.data.get('due'),
+        })
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # One day of slack either side so a member in a timezone ahead of or
+        # behind the server still passes for "today" and "two weeks from today".
+        today = timezone.localdate()
+        due = serializer.validated_data['due']
+        if due < today - timedelta(days=1):
+            return _bad_request('The due date cannot be in the past.')
+        if due > today + timedelta(days=MAX_LOAN_DAYS + 1):
+            return _bad_request(f'Loans can run for at most {MAX_LOAN_DAYS} days.')
+
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def return_book(request, pk):
+    """Members can only return their own loans."""
+    loan = borrow.objects.filter(pk=pk, user=request.user).first()
+    if loan is None:
+        return Response({'detail': 'Loan not found.'}, status=status.HTTP_404_NOT_FOUND)
+    loan.delete()
+    return Response({'detail': 'Thanks, the book has been returned.'})
 
 
 @api_view(['GET'])
 def eachbook(request, pk):
     try:
-        book = books.objects.get(num=pk)
-    except books.DoesNotExist:
+        book = with_active_loans(books.objects.filter(num=int(pk))).first()
+    except (TypeError, ValueError):
+        book = None
+    if book is None:
         return Response({'detail': 'Book not found.'}, status=status.HTTP_404_NOT_FOUND)
     serializer = BookSerializer(book, many=False)
     return Response(serializer.data)
@@ -205,9 +350,15 @@ def eachbook(request, pk):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def eachbobook(request, pk):
-    book = borrow.objects.filter(num=pk)
-    serializer = BorrowSerializer(book, many=True)
-    return Response(serializer.data)
+    """Who has a title out is private: members see only due dates and whether a loan is their own."""
+    try:
+        loans = borrow.objects.filter(num=int(pk)).order_by('due')
+    except (TypeError, ValueError):
+        loans = borrow.objects.none()
+    return Response([
+        {'id': loan.id, 'due': loan.due, 'imprint': loan.imprint, 'mine': loan.user_id == request.user.id}
+        for loan in loans
+    ])
 
 
 @api_view(['GET'])
@@ -251,9 +402,10 @@ def genres_list(request):
 @api_view(['GET'])
 def author(request):
     """Authors are derived from the library: only users with at least one book appear here."""
+    first_book_name = books.objects.filter(user=OuterRef('pk')).order_by('id').values('name')[:1]
     users = (
         User.objects.filter(books__isnull=False)
-        .annotate(book_count=Count('books'))
+        .annotate(book_count=Count('books'), first_book_name=Subquery(first_book_name))
         .distinct()
         .order_by('username')
     )
@@ -272,47 +424,28 @@ def autbook(request, pk):
     return Response(serializer.data)
 
 
-@api_view(['GET'])
-def userb(request, pk):
-    try:
-        use = User.objects.get(id=pk)
-    except User.DoesNotExist:
-        return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-    serializer = UserSerializer(use, many=False)
-    return Response(serializer.data)
-
-
 class EventListView(ListAPIView):
-    queryset = books.objects.all()
+    """Catalog search: matches title, author name, or ISBN anywhere in the text."""
     serializer_class = BookSerializer
     filter_backends = [SearchFilter]
-    search_fields = ['^title']
+    search_fields = ['title', 'name', 'isbn']
+
+    def get_queryset(self):
+        return with_active_loans(books.objects.all()).order_by('title')
 
 
 @api_view(['POST'])
 @permission_classes([IsAdminUser])
 def bookp(request):
-    title = request.data.get('title', '')
-    genre = request.data.get('genre', '')
-    description = request.data.get('description', '')
-    num = request.data.get('num', '')
-    name = request.data.get('name', '')
-    cover_url = request.data.get('cover_url', '') or None
+    serializer = BookSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    if not title or not num:
-        return Response(
-            {'detail': 'title and num are required.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    num = serializer.validated_data.get('num')
+    if num is None:
+        return Response({'num': ['A catalog number is required.']}, status=status.HTTP_400_BAD_REQUEST)
+    if books.objects.filter(num=num).exists():
+        return Response({'num': ['That catalog number is already in use.']}, status=status.HTTP_400_BAD_REQUEST)
 
-    book = books.objects.create(
-        user=request.user,
-        title=title,
-        genre=genre,
-        description=description,
-        num=num,
-        name=name,
-        cover_url=cover_url,
-    )
-    serializer = BookSerializer(book)
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+    book = serializer.save(user=request.user)
+    return Response(BookSerializer(book).data, status=status.HTTP_201_CREATED)
