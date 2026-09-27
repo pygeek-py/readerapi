@@ -10,9 +10,15 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 
+import sys
 from pathlib import Path
 import dj_database_url
 from decouple import config, Csv
+
+# Used below to keep email synchronous during `manage.py test` (see
+# EMAIL_SEND_IN_BACKGROUND) so tests can assert against mail.outbox right
+# after the request that triggers it.
+TESTING = 'test' in sys.argv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -209,6 +215,15 @@ REQUIRE_EMAIL_VERIFICATION = config(
     default=EMAIL_BACKEND != 'django.core.mail.backends.console.EmailBackend',
     cast=bool,
 )
+
+# This app runs a single synchronous gunicorn worker on Render's free tier.
+# Sending email inline would tie that worker up for the whole round trip to
+# the mail provider, stalling every other request on the site until it
+# finished or gunicorn killed the worker for taking too long (surfacing as
+# "Unable to reach the server" for everyone, not just whoever triggered the
+# email). Views send email on a background thread instead; this is off during
+# tests so they can check mail.outbox right after the request returns.
+EMAIL_SEND_IN_BACKGROUND = not TESTING
 
 # Base URL of the deployed frontend, used to build links inside emails.
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')

@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import timedelta
 
 from django.conf import settings
@@ -53,15 +54,22 @@ class ResendVerificationThrottle(AnonRateThrottle):
 def _send_email_safely(send_fn, *args):
     """
     Email delivery is best-effort from the caller's point of view: a
-    misconfigured or unreachable SMTP server shouldn't turn account
-    creation, resend, or password-reset requests into a 500. The action
-    that already succeeded (account created, token issued) still stands;
-    the user can always use "resend" once delivery is working.
+    misconfigured or unreachable mail provider shouldn't turn account
+    creation, resend, or password-reset requests into a 500, and shouldn't
+    make the caller wait on it either. The action that already succeeded
+    (account created, token issued) still stands; the user can always use
+    "resend" once delivery is working. See EMAIL_SEND_IN_BACKGROUND.
     """
-    try:
-        send_fn(*args)
-    except Exception:
-        logger.exception('Failed to send email via %s', send_fn.__name__)
+    def _run():
+        try:
+            send_fn(*args)
+        except Exception:
+            logger.exception('Failed to send email via %s', send_fn.__name__)
+
+    if settings.EMAIL_SEND_IN_BACKGROUND:
+        threading.Thread(target=_run, daemon=True).start()
+    else:
+        _run()
 
 
 def _send_verification(user):
