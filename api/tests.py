@@ -135,6 +135,19 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class HealthCheckTests(APITestCase):
+    def test_healthz_does_not_touch_the_database(self):
+        with self.assertNumQueries(0):
+            response = self.client.get('/healthz/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_readyz_touches_the_database(self):
+        with self.assertNumQueries(1):
+            response = self.client.get('/readyz/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json(), {'status': 'ok', 'db': 'ok'})
+
+
 class LogoutTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='erin', password='pass12345')

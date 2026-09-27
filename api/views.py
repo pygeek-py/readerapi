@@ -42,6 +42,21 @@ def healthz(request):
     """Plain Django view (no DRF, no DB) for uptime/keep-alive pings."""
     return JsonResponse({'status': 'ok'})
 
+
+def readyz(request):
+    """
+    Like healthz, but also touches the database. Render's web service and
+    Neon's Postgres compute suspend on separate idle timers; the keep-alive
+    workflow pings this (not just healthz) so Neon never gets the chance to
+    go cold. A cold Neon compute can take long enough to wake that the first
+    real request's query times out and the connection gets reset, which is
+    exactly what a signed-out visitor would see as "Unable to reach the
+    server" the moment they try to sign up or browse the catalog.
+    """
+    books.objects.exists()
+    return JsonResponse({'status': 'ok', 'db': 'ok'})
+
+
 logger = logging.getLogger(__name__)
 
 

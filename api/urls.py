@@ -4,6 +4,7 @@ from .views import EventListView
 
 urlpatterns = [
     path('healthz/', views.healthz, name="healthz"),
+    path('readyz/', views.readyz, name="readyz"),
     path('', views.getbook, name="getbook"),
     path('borrow/', views.borrows, name="borrows"),
     path('return/<int:pk>/', views.return_book, name="return-book"),

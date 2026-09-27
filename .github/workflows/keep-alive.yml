@@ -5,19 +5,20 @@ name: Keep Render services warm
 # own workflow parser accepts the quoted form the same as the unquoted one.
 "on":
   schedule:
-    # Render's free tier spins a service down after ~15 minutes idle;
-    # pinging every 10 minutes keeps both services from ever reaching that.
-    - cron: "*/10 * * * *"
+    # Render's free tier spins a service down after ~15 minutes idle, and the
+    # Neon Postgres database suspends on its own, separate idle timer that can
+    # be even shorter. Every 5 minutes keeps both comfortably below either.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping backend (readerapi)
+      - name: Ping backend + database (readerapi)
         run: |
-          curl -sf --max-time 25 https://readerapi.onrender.com/healthz/ \
-            || echo "Backend ping failed or timed out (likely mid cold-start) - not fatal."
+          curl -sf --max-time 25 https://readerapi.onrender.com/readyz/ \
+            || echo "Backend/DB ping failed or timed out (likely mid cold-start) - not fatal."
 
       - name: Ping frontend (reader)
         run: |

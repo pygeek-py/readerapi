@@ -109,7 +109,12 @@ DATABASES = {
         config(
             'DATABASE_URL',
             default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        )
+        ),
+        # Reuse a connection across requests instead of opening a fresh one
+        # each time (Django's own default). Neon can take a moment to serve a
+        # brand-new connection right after being idle, so opening one per
+        # request means paying that cost far more often than necessary.
+        conn_max_age=600,
     )
 }
 
